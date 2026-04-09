@@ -237,13 +237,19 @@ function extractJson(text) {
 }
 
 function normalizeAiResult(result) {
+  const kilograms = Number(result.kilograms || result.kg || 0);
+  const impactLevel = inferImpactLevel(kilograms);
+  const suggestion = String(result.suggestion || "");
+
   return {
-    kilograms: Number(result.kilograms || result.kg || 0),
+    kilograms,
     category: String(result.category || "Mixed"),
     explanation: String(result.explanation || "AI estimated the footprint from the provided input."),
     activity: String(result.activity || "AI activity"),
-    impactLevel: String(result.impactLevel || inferImpactLevel(Number(result.kilograms || result.kg || 0))),
-    suggestion: String(result.suggestion || "")
+    impactLevel,
+    suggestion: impactLevel === "High"
+      ? (suggestion || "Choose a lower-carbon alternative for this activity.")
+      : ""
   };
 }
 
