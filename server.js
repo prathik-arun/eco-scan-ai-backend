@@ -7,9 +7,11 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
 const systemPrompt =
   "You estimate the carbon footprint of one personal activity. " +
-  "Return strict JSON with keys: kilograms, category, explanation, activity. " +
+  "Return strict JSON with keys: kilograms, category, explanation, activity, impactLevel, suggestion. " +
   "kilograms must be a number in kg CO2e. category must be one short label like Transport, Food, Energy, Shopping, Waste, or Mixed. " +
-  "explanation must be under 140 characters. activity must be a short normalized activity label.";
+  "explanation must be under 140 characters. activity must be a short normalized activity label. " +
+  "impactLevel must be either High or Low. Mark it High when the footprint is meaningfully above a low-impact alternative for the same task. " +
+  "suggestion must be a short practical swap. If impactLevel is Low, suggestion should be an empty string.";
 
 const server = createServer(async (req, res) => {
   addCors(res);
@@ -43,7 +45,9 @@ const server = createServer(async (req, res) => {
         aiResult.kilograms,
         aiResult.category,
         aiResult.explanation,
-        aiResult.activity
+        aiResult.activity,
+        aiResult.impactLevel,
+        aiResult.suggestion
       ]);
       return;
     }
@@ -60,7 +64,9 @@ const server = createServer(async (req, res) => {
         aiResult.kilograms,
         aiResult.category,
         aiResult.explanation,
-        aiResult.activity
+        aiResult.activity,
+        aiResult.impactLevel,
+        aiResult.suggestion
       ]);
       return;
     }
@@ -203,6 +209,12 @@ function normalizeAiResult(result) {
     kilograms: Number(result.kilograms || result.kg || 0),
     category: String(result.category || "Mixed"),
     explanation: String(result.explanation || "AI estimated the footprint from the provided input."),
-    activity: String(result.activity || "AI activity")
+    activity: String(result.activity || "AI activity"),
+    impactLevel: String(result.impactLevel || inferImpactLevel(Number(result.kilograms || result.kg || 0))),
+    suggestion: String(result.suggestion || "")
   };
+}
+
+function inferImpactLevel(kilograms) {
+  return kilograms >= 3 ? "High" : "Low";
 }
