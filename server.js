@@ -32,6 +32,8 @@ const systemPrompt =
 
 const server = createServer(async (req, res) => {
   addCors(res);
+  const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${requestUrl.pathname}`);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -39,7 +41,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.url === "/health") {
+  if (requestUrl.pathname === "/health") {
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -50,15 +52,17 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    if (req.method === "POST" && req.url === "/analyze-text") {
-      const textBody = (await readText(req)).trim();
+    if ((req.method === "POST" || req.method === "GET") && requestUrl.pathname === "/analyze-text") {
+      const textBody = req.method === "GET"
+        ? (requestUrl.searchParams.get("input") || "").trim()
+        : (await readText(req)).trim();
       if (!textBody) {
         sendJson(res, 400, { error: "Text input is empty." });
         return;
       }
 
       const aiResult = await analyzeText(textBody);
-      await saveAiResult({
+      await trySaveAiResult({
         inputType: inferInputType(textBody),
         activityText: textBody,
         aiResult
@@ -74,7 +78,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/analyze-image") {
+    if (req.method === "POST" && requestUrl.pathname === "/analyze-image") {
       const { buffer, contentType } = await readBuffer(req);
       if (!buffer.length) {
         sendJson(res, 400, { error: "Image input is empty." });
@@ -82,7 +86,7 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeImage(buffer, contentType || "image/jpeg");
-      await saveAiResult({
+      await trySaveAiResult({
         inputType: "scan",
         activityText: aiResult.activity,
         aiResult
@@ -100,6 +104,7 @@ const server = createServer(async (req, res) => {
 
     sendJson(res, 404, { error: "Route not found." });
   } catch (error) {
+    console.error("Request failed:", error);
     sendJson(res, 500, { error: error instanceof Error ? error.message : "Unknown server error." });
   }
 });
@@ -292,6 +297,14 @@ async function saveAiResult({ inputType, activityText, aiResult }) {
       createdAt: updatedAt
     });
   });
+}
+
+async function trySaveAiResult(payload) {
+  try {
+    await saveAiResult(payload);
+  } catch (error) {
+    console.error("Firestore save skipped due to error:", error);
+  }
 }
 
 function formatDateId(date) {
