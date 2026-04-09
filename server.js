@@ -1,9 +1,26 @@
 import { createServer } from "node:http";
+import admin from "firebase-admin";
 
 const PORT = Number(process.env.PORT || 8787);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
+const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL || "";
+const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY || "";
+const DAILY_BUDGET_KG = 20;
+
+if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY && !admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: FIREBASE_PROJECT_ID,
+      clientEmail: FIREBASE_CLIENT_EMAIL,
+      privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
+    })
+  });
+}
+
+const firestore = admin.apps.length ? admin.firestore() : null;
 
 const systemPrompt =
   "You estimate the carbon footprint of one personal activity. " +
@@ -41,6 +58,11 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeText(textBody);
+      await saveAiResult({
+        inputType: inferInputType(textBody),
+        activityText: textBody,
+        aiResult
+      });
       sendJson(res, 200, [
         aiResult.kilograms,
         aiResult.category,
@@ -60,6 +82,11 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeImage(buffer, contentType || "image/jpeg");
+      await saveAiResult({
+        inputType: "scan",
+        activityText: aiResult.activity,
+        aiResult
+      });
       sendJson(res, 200, [
         aiResult.kilograms,
         aiResult.category,
@@ -217,4 +244,63 @@ function normalizeAiResult(result) {
 
 function inferImpactLevel(kilograms) {
   return kilograms >= 3 ? "High" : "Low";
+}
+
+function inferInputType(activityText) {
+  return /\b(spoke|said|voice)\b/i.test(activityText) ? "voice" : "type";
+}
+
+async function saveAiResult({ inputType, activityText, aiResult }) {
+  if (!firestore) {
+    return;
+  }
+
+  const now = new Date();
+  const dateId = formatDateId(now);
+  const dayRef = firestore.collection("dailyLogs").doc(dateId);
+  const entryRef = dayRef.collection("entries").doc();
+
+  await firestore.runTransaction(async (transaction) => {
+    const daySnap = await transaction.get(dayRef);
+    const previousDayTotal = daySnap.exists ? Number(daySnap.data().dayTotalKg || 0) : 0;
+    const nextDayTotal = roundToOne(previousDayTotal + aiResult.kilograms);
+    const budgetLeftKg = roundToOne(Math.max(0, DAILY_BUDGET_KG - nextDayTotal));
+    const updatedAt = admin.firestore.Timestamp.fromDate(now);
+
+    transaction.set(
+      dayRef,
+      {
+        date: dateId,
+        dayTotalKg: nextDayTotal,
+        budgetLeftKg,
+        entryCount: daySnap.exists ? Number(daySnap.data().entryCount || 0) + 1 : 1,
+        updatedAt
+      },
+      { merge: true }
+    );
+
+    transaction.set(entryRef, {
+      activityText,
+      normalizedActivity: aiResult.activity,
+      inputType,
+      carbonKg: roundToOne(aiResult.kilograms),
+      impactLevel: aiResult.impactLevel,
+      aiSuggestion: aiResult.suggestion,
+      budgetLeftKg,
+      category: aiResult.category,
+      aiExplanation: aiResult.explanation,
+      createdAt: updatedAt
+    });
+  });
+}
+
+function formatDateId(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function roundToOne(value) {
+  return Math.round(value * 10) / 10;
 }
