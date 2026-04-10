@@ -55,6 +55,26 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/today-log-text") {
+    try {
+      sendText(res, 200, await getTodayLogText());
+    } catch (error) {
+      console.error("Today log text failed:", error);
+      sendText(res, 200, "No saved logs for today yet.");
+    }
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/today-tips-text") {
+    try {
+      sendText(res, 200, await getTodayTipsText());
+    } catch (error) {
+      console.error("Today tips text failed:", error);
+      sendText(res, 200, emptyTipsText());
+    }
+    return;
+  }
+
   if (!OPENAI_API_KEY) {
     sendJson(res, 503, { error: "Missing OPENAI_API_KEY on the backend." });
     return;
@@ -118,6 +138,11 @@ function addCors(res) {
 function sendJson(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+}
+
+function sendText(res, status, body) {
+  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end(body);
 }
 
 function sendAiResult(res, aiResult) {
@@ -336,6 +361,52 @@ async function getTodaySummary() {
   const topSource = mostCommon(entries.map((entry) => entry.category).filter(Boolean)) || "Mixed";
 
   return [dayTotalKg, logText, tipsText, topSource];
+}
+
+async function getTodayLogText() {
+  const { entries, dayTotalKg } = await getTodayEntries();
+  if (!entries.length) {
+    return "No saved logs for today yet.";
+  }
+
+  const rows = entries.map((entry) => {
+    const activity = entry.activityText || entry.normalizedActivity || "Activity";
+    return `- ${activity} - ${Number(entry.carbonKg || 0)} kg CO2`;
+  });
+
+  return [`Total today: ${dayTotalKg} kg CO2e`, "", ...rows].join("\n");
+}
+
+async function getTodayTipsText() {
+  const { entries } = await getTodayEntries();
+  const highTips = entries
+    .filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion)
+    .map((entry) => [
+      "------------------------------",
+      "TIP CARD",
+      `Try: ${entry.aiSuggestion}`,
+      `For: ${entry.activityText || entry.normalizedActivity || "Activity"}`,
+      "------------------------------"
+    ].join("\n"));
+
+  return highTips.length ? highTips.join("\n\n") : emptyTipsText();
+}
+
+async function getTodayEntries() {
+  if (!firestore) {
+    return { entries: [], dayTotalKg: 0 };
+  }
+
+  const dateId = formatDateId(new Date());
+  const dayRef = firestore.collection("dailyLogs").doc(dateId);
+  const daySnap = await dayRef.get();
+  const entriesSnap = await dayRef.collection("entries").orderBy("createdAt", "asc").get();
+  const entries = entriesSnap.docs.map((doc) => doc.data());
+  const dayTotalKg = daySnap.exists
+    ? Number(daySnap.data().dayTotalKg || 0)
+    : roundToOne(entries.reduce((total, entry) => total + Number(entry.carbonKg || 0), 0));
+
+  return { entries, dayTotalKg };
 }
 
 function emptyTodaySummary() {
