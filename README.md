@@ -7,12 +7,27 @@ This backend is the bridge between MIT App Inventor and a real AI model.
 - `POST /analyze-text`
   - Accepts plain text from typed input or speech-to-text
   - Returns a JSON array in this exact order:
-    - `[kilograms, category, explanation, activity]`
+    - `[kilograms, category, explanation, activity, impactLevel, suggestion]`
 
 - `POST /analyze-image`
   - Accepts the raw photo file uploaded from MIT App Inventor
   - Uses a multimodal model to inspect the image
   - Returns the same JSON array shape
+
+## Firebase storage
+
+If these environment variables are set in Render, the backend stores every AI result in Firestore grouped by day:
+
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
+
+Stored structure:
+
+- `dailyLogs/{YYYY-MM-DD}`
+- `dailyLogs/{YYYY-MM-DD}/entries/{autoId}`
+
+Each entry stores the user activity, carbon amount, high/low impact level, AI suggestion, category, explanation, and timestamp. If Firebase saving fails, the AI response still returns to the app.
 
 ## Setup
 
