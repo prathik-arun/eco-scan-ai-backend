@@ -5,7 +5,6 @@ const PORT = Number(process.env.PORT || 8787);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL || "";
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY || "";
@@ -487,26 +486,7 @@ async function getWeeklyTrendsText() {
   const earnedBadges = getEarnedBadges({ allEntries, activeDays, dayRows, categoryTotals, highTipCount });
   const lockedBadges = getLockedBadges(earnedBadges);
 
-  const barRows = dayRows.map((day) => {
-    const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 12));
-    const bar = barLength > 0 ? "#".repeat(barLength) : ".";
-    return `${day.label.padEnd(3)} | ${bar.padEnd(12)} ${day.total} kg`;
-  });
-
-  const categoryRows = [...categoryTotals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([category, total]) => `${category}: ${total} kg CO2e`);
-
   return [
-    "WEEKLY BAR GRAPH",
-    `Total this week: ${weekTotal} kg CO2e`,
-    "Low = under 3 kg, Medium = 3-9.9 kg, High = 10+ kg",
-    "",
-    ...barRows,
-    "",
-    "BREAKDOWN BY CATEGORY",
-    ...(categoryRows.length ? categoryRows : ["No category data yet."]),
-    "",
     "BADGES EARNED",
     ...(earnedBadges.length ? earnedBadges.map((badge) => earnedBadgeText(badge)) : ["No badges earned yet. Log your first activity to begin."]),
     "",
@@ -516,10 +496,6 @@ async function getWeeklyTrendsText() {
 }
 
 async function getWeeklyTrendsImage(type) {
-  if (!OPENAI_API_KEY) {
-    throw new Error("Missing OPENAI_API_KEY for image generation.");
-  }
-
   const trends = await getWeeklyTrendData();
   const cacheKey = JSON.stringify({
     type,
@@ -531,11 +507,10 @@ async function getWeeklyTrendsImage(type) {
     return trendImageCache.get(cacheKey);
   }
 
-  const prompt = type === "category"
-    ? buildCategoryImagePrompt(trends)
-    : buildBarGraphImagePrompt(trends);
-
-  const image = await requestOpenAiImage(prompt);
+  const chartUrl = type === "category"
+    ? buildCategoryChartUrl(trends)
+    : buildBarChartUrl(trends);
+  const image = await fetchChartImage(chartUrl);
   trendImageCache.set(cacheKey, image);
   return image;
 }
@@ -604,12 +579,6 @@ function emptyTipsText() {
 
 function emptyWeeklyTrendsText() {
   return [
-    "WEEKLY BAR GRAPH",
-    "No weekly data yet.",
-    "",
-    "BREAKDOWN BY CATEGORY",
-    "No category data yet.",
-    "",
     "BADGES EARNED",
     "No badges earned yet.",
     "",
@@ -672,6 +641,18 @@ function getLockedBadges(earnedBadges) {
   return allBadges.filter((badge) => !earnedNames.has(badge.name));
 }
 
+function categoryColor(category) {
+  const colors = {
+    Transport: "#DD4B39",
+    Food: "#F59E0B",
+    Energy: "#2563EB",
+    Shopping: "#7C3AED",
+    Waste: "#64748B",
+    Mixed: "#168357"
+  };
+  return colors[category] || "#168357";
+}
+
 function earnedBadgeText(badge) {
   return [
     `UNLOCKED BADGE: ${badge.name}`,
@@ -686,58 +667,90 @@ function lockedBadgeText(badge) {
   ].join("\n");
 }
 
-function buildBarGraphImagePrompt({ dayRows, weekTotal }) {
-  const data = dayRows.map((day) => `${day.label}: ${day.total} kg CO2e`).join(", ");
-  return [
-    "Create a polished mobile app dashboard image for an eco carbon tracker.",
-    "The image must be a clean, attractive weekly bar graph card.",
-    "Use a dark forest-green background, rounded white cards, green/orange/red bars, modern typography, and clear labels.",
-    "Do not include tiny unreadable text. Make the bars and numbers large.",
-    `Weekly total: ${weekTotal} kg CO2e.`,
-    `Daily data: ${data}.`,
-    "Portrait mobile ratio. No logos, no people, no extra UI buttons."
-  ].join(" ");
-}
-
-function buildCategoryImagePrompt({ categoryRows }) {
-  const data = categoryRows.length
-    ? categoryRows.map((row) => `${row.category}: ${row.total} kg CO2e`).join(", ")
-    : "No category data yet.";
-  return [
-    "Create a polished mobile app dashboard image for an eco carbon tracker.",
-    "The image must show a category breakdown card with colorful horizontal bars or donut-style sections.",
-    "Use a dark forest-green background, rounded white cards, and attractive category colors.",
-    "Make category names and kg CO2e numbers large and readable.",
-    `Category data: ${data}.`,
-    "Portrait mobile ratio. No logos, no people, no extra UI buttons."
-  ].join(" ");
-}
-
-async function requestOpenAiImage(prompt) {
-  const response = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
+function buildBarChartUrl({ dayRows, weekTotal }) {
+  const labels = dayRows.map((day) => day.label);
+  const values = dayRows.map((day) => day.total);
+  const colors = values.map((value) => value >= 10 ? "#DD4B39" : value >= 3 ? "#F59E0B" : "#168357");
+  const chart = {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "kg CO2e",
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 12,
+        borderSkipped: false
+      }]
     },
-    body: JSON.stringify({
-      model: OPENAI_IMAGE_MODEL,
-      prompt,
-      size: "1024x1024"
-    })
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: `Weekly Carbon Footprint - ${weekTotal} kg CO2e`,
+          color: "#0B6B43",
+          font: { size: 24, weight: "bold" }
+        },
+        legend: { display: false }
+      },
+      scales: {
+        x: { ticks: { color: "#26352D", font: { size: 16, weight: "bold" } }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: "#6E7F73" }, grid: { color: "#E5EFE8" } }
+      }
+    }
+  };
+  return quickChartUrl(chart);
+}
+
+function buildCategoryChartUrl({ categoryRows }) {
+  const rows = categoryRows.length ? categoryRows : [{ category: "No data", total: 1 }];
+  const chart = {
+    type: "doughnut",
+    data: {
+      labels: rows.map((row) => row.category),
+      datasets: [{
+        data: rows.map((row) => row.total),
+        backgroundColor: rows.map((row) => categoryColor(row.category)),
+        borderColor: "#FFFFFF",
+        borderWidth: 4
+      }]
+    },
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: "Breakdown By Category",
+          color: "#0B6B43",
+          font: { size: 26, weight: "bold" }
+        },
+        legend: {
+          position: "bottom",
+          labels: { color: "#26352D", font: { size: 15, weight: "bold" } }
+        }
+      }
+    }
+  };
+  return quickChartUrl(chart);
+}
+
+function quickChartUrl(chart) {
+  const params = new URLSearchParams({
+    width: "720",
+    height: "520",
+    backgroundColor: "white",
+    format: "png",
+    chart: JSON.stringify(chart)
   });
+  return `https://quickchart.io/chart?${params.toString()}`;
+}
 
-  const data = await response.json();
+async function fetchChartImage(chartUrl) {
+  const response = await fetch(chartUrl);
   if (!response.ok) {
-    throw new Error(JSON.stringify(data));
+    throw new Error(`Chart image failed with status ${response.status}`);
   }
-
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) {
-    throw new Error("Image response did not include b64_json.");
-  }
-
-  return Buffer.from(b64, "base64");
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
 }
 
 function escapeHtml(value) {
