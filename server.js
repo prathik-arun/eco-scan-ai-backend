@@ -5,6 +5,7 @@ const PORT = Number(process.env.PORT || 8787);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL || "";
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY || "";
@@ -21,6 +22,7 @@ if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY && !adm
 }
 
 const firestore = admin.apps.length ? admin.firestore() : null;
+const trendImageCache = new Map();
 
 const systemPrompt =
   "You estimate the carbon footprint of one personal activity. " +
@@ -98,6 +100,18 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/weekly-trends-image") {
+    try {
+      const imageType = requestUrl.searchParams.get("type") === "category" ? "category" : "bar";
+      const image = await getWeeklyTrendsImage(imageType);
+      sendImage(res, 200, image);
+    } catch (error) {
+      console.error("Weekly trends image failed:", error);
+      sendText(res, 500, "Trend image generation failed.");
+    }
+    return;
+  }
+
   if (!OPENAI_API_KEY) {
     sendJson(res, 503, { error: "Missing OPENAI_API_KEY on the backend." });
     return;
@@ -166,6 +180,14 @@ function sendJson(res, status, body) {
 function sendText(res, status, body) {
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(body);
+}
+
+function sendImage(res, status, imageBuffer) {
+  res.writeHead(status, {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=600"
+  });
+  res.end(imageBuffer);
 }
 
 function sendAiResult(res, aiResult) {
@@ -467,34 +489,92 @@ async function getWeeklyTrendsText() {
 
   const barRows = dayRows.map((day) => {
     const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 12));
-    const bar = barLength > 0 ? "█".repeat(barLength) : "░";
-    const color = trendColor(day.total);
-    return `<b>${day.label}</b> &nbsp; <font color="${color}">${bar}</font> &nbsp; <font color="${color}"><b>${day.total} kg</b></font>`;
+    const bar = barLength > 0 ? "#".repeat(barLength) : ".";
+    return `${day.label.padEnd(3)} | ${bar.padEnd(12)} ${day.total} kg`;
   });
 
   const categoryRows = [...categoryTotals.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([category, total]) => {
-      const color = categoryColor(category);
-      return `<font color="${color}"><b>${escapeHtml(category)}</b></font>: ${total} kg CO2e`;
-    });
+    .map(([category, total]) => `${category}: ${total} kg CO2e`);
 
   return [
-    `<font color="#0B6B43"><b>Weekly Bar Graph</b></font>`,
-    `<font color="#2F855A"><b>${weekTotal} kg CO2e this week</b></font>`,
-    `<font color="#6E7F73">Each bar shows one day of the current week.</font>`,
-    "<br/>",
+    "WEEKLY BAR GRAPH",
+    `Total this week: ${weekTotal} kg CO2e`,
+    "Low = under 3 kg, Medium = 3-9.9 kg, High = 10+ kg",
+    "",
     ...barRows,
-    "<br/>",
-    `<font color="#0B6B43"><b>Breakdown By Category</b></font>`,
-    ...(categoryRows.length ? categoryRows : [`<font color="#6E7F73">No category data yet.</font>`]),
-    "<br/>",
-    `<font color="#0B6B43"><b>Badges Earned</b></font>`,
-    ...(earnedBadges.length ? earnedBadges.map((badge) => earnedBadgeHtml(badge)) : [`<font color="#6E7F73">No badges earned yet. Log your first activity to begin.</font>`]),
-    "<br/>",
-    `<font color="#0B6B43"><b>Badges To Earn</b></font>`,
-    ...lockedBadges.map((badge) => lockedBadgeHtml(badge))
-  ].join("<br/>");
+    "",
+    "BREAKDOWN BY CATEGORY",
+    ...(categoryRows.length ? categoryRows : ["No category data yet."]),
+    "",
+    "BADGES EARNED",
+    ...(earnedBadges.length ? earnedBadges.map((badge) => earnedBadgeText(badge)) : ["No badges earned yet. Log your first activity to begin."]),
+    "",
+    "BADGES TO EARN",
+    ...lockedBadges.map((badge) => lockedBadgeText(badge))
+  ].join("\n");
+}
+
+async function getWeeklyTrendsImage(type) {
+  if (!OPENAI_API_KEY) {
+    throw new Error("Missing OPENAI_API_KEY for image generation.");
+  }
+
+  const trends = await getWeeklyTrendData();
+  const cacheKey = JSON.stringify({
+    type,
+    days: trends.dayRows.map((day) => [day.id, day.total]),
+    categories: trends.categoryRows
+  });
+
+  if (trendImageCache.has(cacheKey)) {
+    return trendImageCache.get(cacheKey);
+  }
+
+  const prompt = type === "category"
+    ? buildCategoryImagePrompt(trends)
+    : buildBarGraphImagePrompt(trends);
+
+  const image = await requestOpenAiImage(prompt);
+  trendImageCache.set(cacheKey, image);
+  return image;
+}
+
+async function getWeeklyTrendData() {
+  if (!firestore) {
+    return { dayRows: [], categoryRows: [], weekTotal: 0 };
+  }
+
+  const dates = getCurrentWeekDateIds();
+  const dayRows = [];
+  const categoryTotals = new Map();
+
+  for (const dateInfo of dates) {
+    const dayRef = firestore.collection("dailyLogs").doc(dateInfo.id);
+    const daySnap = await dayRef.get();
+    const entriesSnap = await dayRef.collection("entries").orderBy("createdAt", "asc").get();
+    const entries = entriesSnap.docs.map((doc) => doc.data());
+    const total = daySnap.exists
+      ? Number(daySnap.data().dayTotalKg || 0)
+      : roundToOne(entries.reduce((sum, entry) => sum + Number(entry.carbonKg || 0), 0));
+
+    for (const entry of entries) {
+      const category = entry.category || "Mixed";
+      categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
+    }
+
+    dayRows.push({ ...dateInfo, total: roundToOne(total) });
+  }
+
+  const categoryRows = [...categoryTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, total]) => ({ category, total }));
+
+  return {
+    dayRows,
+    categoryRows,
+    weekTotal: roundToOne(dayRows.reduce((sum, day) => sum + day.total, 0))
+  };
 }
 
 async function getTodayEntries() {
@@ -524,20 +604,20 @@ function emptyTipsText() {
 
 function emptyWeeklyTrendsText() {
   return [
-    `<font color="#0B6B43"><b>Weekly Bar Graph</b></font>`,
-    `<font color="#6E7F73">No weekly data yet.</font>`,
-    "<br/>",
-    `<font color="#0B6B43"><b>Breakdown By Category</b></font>`,
-    `<font color="#6E7F73">No category data yet.</font>`,
-    "<br/>",
-    `<font color="#0B6B43"><b>Badges Earned</b></font>`,
-    `<font color="#6E7F73">No badges earned yet.</font>`,
-    "<br/>",
-    `<font color="#0B6B43"><b>Badges To Earn</b></font>`,
-    lockedBadgeHtml({ name: "First Footprint", detail: "Log your first activity." }),
-    lockedBadgeHtml({ name: "Habit Builder", detail: "Log activities on 3 days this week." }),
-    lockedBadgeHtml({ name: "Carbon Detective", detail: "Track 3 different categories." })
-  ].join("<br/>");
+    "WEEKLY BAR GRAPH",
+    "No weekly data yet.",
+    "",
+    "BREAKDOWN BY CATEGORY",
+    "No category data yet.",
+    "",
+    "BADGES EARNED",
+    "No badges earned yet.",
+    "",
+    "BADGES TO EARN",
+    lockedBadgeText({ name: "First Footprint", detail: "Log your first activity." }),
+    lockedBadgeText({ name: "Habit Builder", detail: "Log activities on 3 days this week." }),
+    lockedBadgeText({ name: "Carbon Detective", detail: "Track 3 different categories." })
+  ].join("\n");
 }
 
 function getCurrentWeekDateIds() {
@@ -592,34 +672,72 @@ function getLockedBadges(earnedBadges) {
   return allBadges.filter((badge) => !earnedNames.has(badge.name));
 }
 
-function trendColor(total) {
-  if (total >= 10) {
-    return "#DD4B39";
+function earnedBadgeText(badge) {
+  return [
+    `UNLOCKED BADGE: ${badge.name}`,
+    `  ${badge.detail}`
+  ].join("\n");
+}
+
+function lockedBadgeText(badge) {
+  return [
+    `LOCKED BADGE: ${badge.name}`,
+    `  ${badge.detail}`
+  ].join("\n");
+}
+
+function buildBarGraphImagePrompt({ dayRows, weekTotal }) {
+  const data = dayRows.map((day) => `${day.label}: ${day.total} kg CO2e`).join(", ");
+  return [
+    "Create a polished mobile app dashboard image for an eco carbon tracker.",
+    "The image must be a clean, attractive weekly bar graph card.",
+    "Use a dark forest-green background, rounded white cards, green/orange/red bars, modern typography, and clear labels.",
+    "Do not include tiny unreadable text. Make the bars and numbers large.",
+    `Weekly total: ${weekTotal} kg CO2e.`,
+    `Daily data: ${data}.`,
+    "Portrait mobile ratio. No logos, no people, no extra UI buttons."
+  ].join(" ");
+}
+
+function buildCategoryImagePrompt({ categoryRows }) {
+  const data = categoryRows.length
+    ? categoryRows.map((row) => `${row.category}: ${row.total} kg CO2e`).join(", ")
+    : "No category data yet.";
+  return [
+    "Create a polished mobile app dashboard image for an eco carbon tracker.",
+    "The image must show a category breakdown card with colorful horizontal bars or donut-style sections.",
+    "Use a dark forest-green background, rounded white cards, and attractive category colors.",
+    "Make category names and kg CO2e numbers large and readable.",
+    `Category data: ${data}.`,
+    "Portrait mobile ratio. No logos, no people, no extra UI buttons."
+  ].join(" ");
+}
+
+async function requestOpenAiImage(prompt) {
+  const response = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_IMAGE_MODEL,
+      prompt,
+      size: "1024x1024"
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(JSON.stringify(data));
   }
-  if (total >= 3) {
-    return "#D97706";
+
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("Image response did not include b64_json.");
   }
-  return "#168357";
-}
 
-function categoryColor(category) {
-  const colors = {
-    Transport: "#DD4B39",
-    Food: "#D97706",
-    Energy: "#2563EB",
-    Shopping: "#7C3AED",
-    Waste: "#64748B",
-    Mixed: "#0B6B43"
-  };
-  return colors[category] || "#0B6B43";
-}
-
-function earnedBadgeHtml(badge) {
-  return `<font color="#168357"><b>UNLOCKED: ${escapeHtml(badge.name)}</b></font><br/><font color="#5B7364">${escapeHtml(badge.detail)}</font>`;
-}
-
-function lockedBadgeHtml(badge) {
-  return `<font color="#8A6D3B"><b>LOCKED: ${escapeHtml(badge.name)}</b></font><br/><font color="#6E7F73">${escapeHtml(badge.detail)}</font>`;
+  return Buffer.from(b64, "base64");
 }
 
 function escapeHtml(value) {
