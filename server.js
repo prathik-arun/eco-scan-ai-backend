@@ -366,24 +366,24 @@ async function getTodaySummary() {
 async function getTodayLogText() {
   const { entries, dayTotalKg } = await getTodayEntries();
   if (!entries.length) {
-    return "No saved logs for today yet.\n\nTap Scan, Type, or Voice to add your first activity.";
+    return "No saved logs for today yet.<br/><br/>Tap Scan, Type, or Voice to add your first activity.";
   }
 
   const rows = entries.map((entry, index) => {
-    const activity = entry.activityText || entry.normalizedActivity || "Activity";
+    const activity = escapeHtml(entry.activityText || entry.normalizedActivity || "Activity");
     const impact = entry.impactLevel || "Low";
     const carbonKg = Number(entry.carbonKg || 0);
-    const impactMarker = impact === "High" ? "HIGH - red" : "LOW - blue";
+    const impactColor = impact === "High" ? "#DD4B39" : "#2563EB";
 
     return [
-      `LOG ENTRY ${index + 1}`,
-      `Activity: ${activity}`,
-      `Carbon: ${carbonKg} kg CO2e`,
-      `Impact: ${impactMarker}`
-    ].join("\n");
+      `<b>LOG ENTRY ${index + 1}</b>`,
+      `<font color="#5B7364">Activity:</font> ${activity}`,
+      `Carbon: <font color="${impactColor}"><b>${carbonKg} kg CO2e</b></font>`,
+      `Impact: <font color="${impactColor}"><b>${impact}</b></font>`
+    ].join("<br/>");
   });
 
-  return [`Total today: ${dayTotalKg} kg CO2e`, ...rows].join("\n\n------------------------------\n\n");
+  return [`<b>Total today: ${dayTotalKg} kg CO2e</b>`, ...rows].join("<br/><br/>------------------------------<br/><br/>");
 }
 
 async function getTodayTipsText() {
