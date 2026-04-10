@@ -366,15 +366,24 @@ async function getTodaySummary() {
 async function getTodayLogText() {
   const { entries, dayTotalKg } = await getTodayEntries();
   if (!entries.length) {
-    return "No saved logs for today yet.";
+    return "No saved logs for today yet.<br><br>Tap Scan, Type, or Voice to add your first activity.";
   }
 
-  const rows = entries.map((entry) => {
-    const activity = entry.activityText || entry.normalizedActivity || "Activity";
-    return `- ${activity} - ${Number(entry.carbonKg || 0)} kg CO2`;
+  const rows = entries.map((entry, index) => {
+    const activity = escapeHtml(entry.activityText || entry.normalizedActivity || "Activity");
+    const impact = entry.impactLevel || "Low";
+    const carbonKg = Number(entry.carbonKg || 0);
+    const impactColor = impact === "High" ? "#DD4B39" : "#2563EB";
+
+    return [
+      `<b>LOG ENTRY ${index + 1}</b>`,
+      `<font color="#5B7364">Activity:</font> ${activity}`,
+      `Carbon: <font color="${impactColor}"><b>${carbonKg} kg CO2e</b></font>`,
+      `Impact: <font color="${impactColor}"><b>${impact}</b></font>`
+    ].join("<br>");
   });
 
-  return [`Total today: ${dayTotalKg} kg CO2e`, "", ...rows].join("\n");
+  return [`<b>Total today: ${dayTotalKg} kg CO2e</b>`, ...rows].join("<br><br>");
 }
 
 async function getTodayTipsText() {
@@ -415,6 +424,15 @@ function emptyTodaySummary() {
 
 function emptyTipsText() {
   return "No high-impact AI tips yet.\nLog a high-carbon activity and your personalized swap cards will appear here.";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function mostCommon(values) {
