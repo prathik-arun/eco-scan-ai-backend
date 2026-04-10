@@ -55,7 +55,10 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && requestUrl.pathname === "/today-log-text") {
+  if (
+    req.method === "GET" &&
+    (requestUrl.pathname === "/today-log-text" || requestUrl.pathname === "/today-log-only-text")
+  ) {
     try {
       sendText(res, 200, await getTodayLogText());
     } catch (error) {
@@ -374,7 +377,7 @@ async function getTodaySummary() {
 }
 
 async function getTodayLogText() {
-  const { entries, dayTotalKg } = await getTodayEntries();
+  const { entries } = await getTodayEntries();
   if (!entries.length) {
     return "No saved logs for today yet.<br/><br/>Tap Scan, Type, or Voice to add your first activity.";
   }
@@ -393,7 +396,7 @@ async function getTodayLogText() {
     ].join("<br/>");
   });
 
-  return [`<b>Total today: ${dayTotalKg} kg CO2e</b>`, ...rows].join("<br/><br/>------------------------------<br/><br/>");
+  return rows.join("<br/><br/>------------------------------<br/><br/>");
 }
 
 async function getTodayTipsText() {
