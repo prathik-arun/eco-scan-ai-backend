@@ -88,6 +88,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/weekly-trends-text") {
+    try {
+      sendText(res, 200, await getWeeklyTrendsText());
+    } catch (error) {
+      console.error("Weekly trends text failed:", error);
+      sendText(res, 200, emptyWeeklyTrendsText());
+    }
+    return;
+  }
+
   if (!OPENAI_API_KEY) {
     sendJson(res, 503, { error: "Missing OPENAI_API_KEY on the backend." });
     return;
@@ -419,6 +429,69 @@ async function getTodayTotalText() {
   return String(dayTotalKg);
 }
 
+async function getWeeklyTrendsText() {
+  if (!firestore) {
+    return emptyWeeklyTrendsText();
+  }
+
+  const dates = getCurrentWeekDateIds();
+  const dayRows = [];
+  const allEntries = [];
+
+  for (const dateInfo of dates) {
+    const dayRef = firestore.collection("dailyLogs").doc(dateInfo.id);
+    const daySnap = await dayRef.get();
+    const entriesSnap = await dayRef.collection("entries").orderBy("createdAt", "asc").get();
+    const entries = entriesSnap.docs.map((doc) => doc.data());
+    const total = daySnap.exists
+      ? Number(daySnap.data().dayTotalKg || 0)
+      : roundToOne(entries.reduce((sum, entry) => sum + Number(entry.carbonKg || 0), 0));
+
+    dayRows.push({ ...dateInfo, total: roundToOne(total), entries });
+    allEntries.push(...entries);
+  }
+
+  const weekTotal = roundToOne(dayRows.reduce((sum, day) => sum + day.total, 0));
+  const activeDays = dayRows.filter((day) => day.total > 0).length;
+  const maxDayTotal = Math.max(1, ...dayRows.map((day) => day.total));
+  const categoryTotals = new Map();
+
+  for (const entry of allEntries) {
+    const category = entry.category || "Mixed";
+    categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
+  }
+
+  const categoryRows = [...categoryTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, total]) => `${category}: ${total} kg CO2e`);
+
+  const highTipCount = allEntries.filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion).length;
+  const earnedBadges = getEarnedBadges({ allEntries, activeDays, dayRows, categoryTotals, highTipCount });
+  const lockedBadges = getLockedBadges(earnedBadges);
+
+  const barRows = dayRows.map((day) => {
+    const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 14));
+    const bar = barLength > 0 ? "#".repeat(barLength) : ".";
+    return `${day.label}: ${bar} ${day.total} kg`;
+  });
+
+  return [
+    "WEEKLY BAR GRAPH",
+    `Total this week: ${weekTotal} kg CO2e`,
+    "",
+    ...barRows,
+    "",
+    "BREAKDOWN BY CATEGORY",
+    ...(categoryRows.length ? categoryRows : ["No category data yet."]),
+    "",
+    "BADGES EARNED",
+    ...(earnedBadges.length ? earnedBadges.map((badge) => `[EARNED] ${badge.name} - ${badge.detail}`) : ["No badges earned yet. Log your first activity to begin."]),
+    "",
+    "BADGES TO EARN",
+    ...lockedBadges.map((badge) => `[LOCKED] ${badge.name} - ${badge.detail}`)
+  ].join("\n");
+}
+
 async function getTodayEntries() {
   if (!firestore) {
     return { entries: [], dayTotalKg: 0 };
@@ -442,6 +515,76 @@ function emptyTodaySummary() {
 
 function emptyTipsText() {
   return "No high-impact AI tips yet.\nLog a high-carbon activity and your personalized swap cards will appear here.";
+}
+
+function emptyWeeklyTrendsText() {
+  return [
+    "WEEKLY BAR GRAPH",
+    "No weekly data yet.",
+    "",
+    "BREAKDOWN BY CATEGORY",
+    "No category data yet.",
+    "",
+    "BADGES EARNED",
+    "No badges earned yet.",
+    "",
+    "BADGES TO EARN",
+    "[LOCKED] First Footprint - Log your first activity.",
+    "[LOCKED] Habit Builder - Log activities on 3 days this week.",
+    "[LOCKED] Carbon Detective - Track 3 different categories."
+  ].join("\n");
+}
+
+function getCurrentWeekDateIds() {
+  const todayId = formatDateId(new Date());
+  const today = new Date(`${todayId}T00:00:00.000Z`);
+  const mondayOffset = (today.getUTCDay() + 6) % 7;
+  const labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(today);
+    date.setUTCDate(today.getUTCDate() - mondayOffset + index);
+    const id = date.toISOString().slice(0, 10);
+    return { id, label: labels[date.getUTCDay()] };
+  });
+}
+
+function getEarnedBadges({ allEntries, activeDays, dayRows, categoryTotals, highTipCount }) {
+  const earned = [];
+  const lowDay = dayRows.some((day) => day.total > 0 && day.total <= 3);
+
+  if (allEntries.length >= 1) {
+    earned.push({ name: "First Footprint", detail: "Logged your first carbon activity." });
+  }
+  if (activeDays >= 3) {
+    earned.push({ name: "Habit Builder", detail: "Logged on 3 days this week." });
+  }
+  if (lowDay) {
+    earned.push({ name: "Light Day", detail: "Kept one day at 3 kg CO2e or less." });
+  }
+  if (categoryTotals.size >= 3) {
+    earned.push({ name: "Carbon Detective", detail: "Tracked 3 different categories." });
+  }
+  if (highTipCount >= 1) {
+    earned.push({ name: "Swap Seeker", detail: "Unlocked an AI swap suggestion." });
+  }
+
+  return earned;
+}
+
+function getLockedBadges(earnedBadges) {
+  const earnedNames = new Set(earnedBadges.map((badge) => badge.name));
+  const allBadges = [
+    { name: "First Footprint", detail: "Log your first carbon activity." },
+    { name: "Habit Builder", detail: "Log activities on 3 days this week." },
+    { name: "Light Day", detail: "Keep any day at 3 kg CO2e or less." },
+    { name: "Carbon Detective", detail: "Track 3 different categories." },
+    { name: "Swap Seeker", detail: "Create 1 high-impact AI tip." },
+    { name: "Low Carbon Streak", detail: "Keep 3 logged days below 5 kg each." },
+    { name: "Category Master", detail: "Track 5 different categories." }
+  ];
+
+  return allBadges.filter((badge) => !earnedNames.has(badge.name));
 }
 
 function escapeHtml(value) {
