@@ -65,6 +65,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/today-total-text") {
+    try {
+      sendText(res, 200, await getTodayTotalText());
+    } catch (error) {
+      console.error("Today total text failed:", error);
+      sendText(res, 200, "0");
+    }
+    return;
+  }
+
   if (req.method === "GET" && requestUrl.pathname === "/today-tips-text") {
     try {
       sendText(res, 200, await getTodayTipsText());
@@ -399,6 +409,11 @@ async function getTodayTipsText() {
     ].join("\n"));
 
   return highTips.length ? highTips.join("\n\n") : emptyTipsText();
+}
+
+async function getTodayTotalText() {
+  const { dayTotalKg } = await getTodayEntries();
+  return String(dayTotalKg);
 }
 
 async function getTodayEntries() {
