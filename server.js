@@ -461,35 +461,40 @@ async function getWeeklyTrendsText() {
     categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
   }
 
-  const categoryRows = [...categoryTotals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([category, total]) => `${category}: ${total} kg CO2e`);
-
   const highTipCount = allEntries.filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion).length;
   const earnedBadges = getEarnedBadges({ allEntries, activeDays, dayRows, categoryTotals, highTipCount });
   const lockedBadges = getLockedBadges(earnedBadges);
 
   const barRows = dayRows.map((day) => {
-    const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 14));
-    const bar = barLength > 0 ? "#".repeat(barLength) : ".";
-    return `${day.label}: ${bar} ${day.total} kg`;
+    const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 12));
+    const bar = barLength > 0 ? "█".repeat(barLength) : "░";
+    const color = trendColor(day.total);
+    return `<b>${day.label}</b> &nbsp; <font color="${color}">${bar}</font> &nbsp; <font color="${color}"><b>${day.total} kg</b></font>`;
   });
 
+  const categoryRows = [...categoryTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, total]) => {
+      const color = categoryColor(category);
+      return `<font color="${color}"><b>${escapeHtml(category)}</b></font>: ${total} kg CO2e`;
+    });
+
   return [
-    "WEEKLY BAR GRAPH",
-    `Total this week: ${weekTotal} kg CO2e`,
-    "",
+    `<font color="#0B6B43"><b>Weekly Bar Graph</b></font>`,
+    `<font color="#2F855A"><b>${weekTotal} kg CO2e this week</b></font>`,
+    `<font color="#6E7F73">Each bar shows one day of the current week.</font>`,
+    "<br/>",
     ...barRows,
-    "",
-    "BREAKDOWN BY CATEGORY",
-    ...(categoryRows.length ? categoryRows : ["No category data yet."]),
-    "",
-    "BADGES EARNED",
-    ...(earnedBadges.length ? earnedBadges.map((badge) => `[EARNED] ${badge.name} - ${badge.detail}`) : ["No badges earned yet. Log your first activity to begin."]),
-    "",
-    "BADGES TO EARN",
-    ...lockedBadges.map((badge) => `[LOCKED] ${badge.name} - ${badge.detail}`)
-  ].join("\n");
+    "<br/>",
+    `<font color="#0B6B43"><b>Breakdown By Category</b></font>`,
+    ...(categoryRows.length ? categoryRows : [`<font color="#6E7F73">No category data yet.</font>`]),
+    "<br/>",
+    `<font color="#0B6B43"><b>Badges Earned</b></font>`,
+    ...(earnedBadges.length ? earnedBadges.map((badge) => earnedBadgeHtml(badge)) : [`<font color="#6E7F73">No badges earned yet. Log your first activity to begin.</font>`]),
+    "<br/>",
+    `<font color="#0B6B43"><b>Badges To Earn</b></font>`,
+    ...lockedBadges.map((badge) => lockedBadgeHtml(badge))
+  ].join("<br/>");
 }
 
 async function getTodayEntries() {
@@ -519,20 +524,20 @@ function emptyTipsText() {
 
 function emptyWeeklyTrendsText() {
   return [
-    "WEEKLY BAR GRAPH",
-    "No weekly data yet.",
-    "",
-    "BREAKDOWN BY CATEGORY",
-    "No category data yet.",
-    "",
-    "BADGES EARNED",
-    "No badges earned yet.",
-    "",
-    "BADGES TO EARN",
-    "[LOCKED] First Footprint - Log your first activity.",
-    "[LOCKED] Habit Builder - Log activities on 3 days this week.",
-    "[LOCKED] Carbon Detective - Track 3 different categories."
-  ].join("\n");
+    `<font color="#0B6B43"><b>Weekly Bar Graph</b></font>`,
+    `<font color="#6E7F73">No weekly data yet.</font>`,
+    "<br/>",
+    `<font color="#0B6B43"><b>Breakdown By Category</b></font>`,
+    `<font color="#6E7F73">No category data yet.</font>`,
+    "<br/>",
+    `<font color="#0B6B43"><b>Badges Earned</b></font>`,
+    `<font color="#6E7F73">No badges earned yet.</font>`,
+    "<br/>",
+    `<font color="#0B6B43"><b>Badges To Earn</b></font>`,
+    lockedBadgeHtml({ name: "First Footprint", detail: "Log your first activity." }),
+    lockedBadgeHtml({ name: "Habit Builder", detail: "Log activities on 3 days this week." }),
+    lockedBadgeHtml({ name: "Carbon Detective", detail: "Track 3 different categories." })
+  ].join("<br/>");
 }
 
 function getCurrentWeekDateIds() {
@@ -585,6 +590,36 @@ function getLockedBadges(earnedBadges) {
   ];
 
   return allBadges.filter((badge) => !earnedNames.has(badge.name));
+}
+
+function trendColor(total) {
+  if (total >= 10) {
+    return "#DD4B39";
+  }
+  if (total >= 3) {
+    return "#D97706";
+  }
+  return "#168357";
+}
+
+function categoryColor(category) {
+  const colors = {
+    Transport: "#DD4B39",
+    Food: "#D97706",
+    Energy: "#2563EB",
+    Shopping: "#7C3AED",
+    Waste: "#64748B",
+    Mixed: "#0B6B43"
+  };
+  return colors[category] || "#0B6B43";
+}
+
+function earnedBadgeHtml(badge) {
+  return `<font color="#168357"><b>UNLOCKED: ${escapeHtml(badge.name)}</b></font><br/><font color="#5B7364">${escapeHtml(badge.detail)}</font>`;
+}
+
+function lockedBadgeHtml(badge) {
+  return `<font color="#8A6D3B"><b>LOCKED: ${escapeHtml(badge.name)}</b></font><br/><font color="#6E7F73">${escapeHtml(badge.detail)}</font>`;
 }
 
 function escapeHtml(value) {
