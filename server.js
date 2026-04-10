@@ -45,6 +45,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/today-summary") {
+    try {
+      sendJson(res, 200, await getTodaySummary());
+    } catch (error) {
+      console.error("Today summary failed:", error);
+      sendJson(res, 200, emptyTodaySummary());
+    }
+    return;
+  }
+
   if (!OPENAI_API_KEY) {
     sendJson(res, 503, { error: "Missing OPENAI_API_KEY on the backend." });
     return;
@@ -289,11 +299,79 @@ async function saveAiResult({ inputType, activityText, aiResult }) {
   });
 }
 
+async function getTodaySummary() {
+  if (!firestore) {
+    return emptyTodaySummary();
+  }
+
+  const dateId = formatDateId(new Date());
+  const dayRef = firestore.collection("dailyLogs").doc(dateId);
+  const daySnap = await dayRef.get();
+  const entriesSnap = await dayRef.collection("entries").orderBy("createdAt", "asc").get();
+  const entries = entriesSnap.docs.map((doc) => doc.data());
+
+  if (!entries.length) {
+    return emptyTodaySummary();
+  }
+
+  const dayTotalKg = daySnap.exists
+    ? Number(daySnap.data().dayTotalKg || 0)
+    : roundToOne(entries.reduce((total, entry) => total + Number(entry.carbonKg || 0), 0));
+
+  const logText = entries
+    .map((entry) => `- ${entry.activityText || entry.normalizedActivity || "Activity"} - ${Number(entry.carbonKg || 0)} kg CO2`)
+    .join("\n");
+
+  const highTips = entries
+    .filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion)
+    .map((entry) => [
+      "------------------------------",
+      "TIP CARD",
+      `Try: ${entry.aiSuggestion}`,
+      `For: ${entry.activityText || entry.normalizedActivity || "Activity"}`,
+      "------------------------------"
+    ].join("\n"));
+
+  const tipsText = highTips.length ? highTips.join("\n\n") : emptyTipsText();
+  const topSource = mostCommon(entries.map((entry) => entry.category).filter(Boolean)) || "Mixed";
+
+  return [dayTotalKg, logText, tipsText, topSource];
+}
+
+function emptyTodaySummary() {
+  return [0, "No saved logs for today yet.", emptyTipsText(), "Mixed"];
+}
+
+function emptyTipsText() {
+  return "No high-impact AI tips yet.\nLog a high-carbon activity and your personalized swap cards will appear here.";
+}
+
+function mostCommon(values) {
+  const counts = new Map();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+
+  let winner = "";
+  let winnerCount = 0;
+  for (const [value, count] of counts.entries()) {
+    if (count > winnerCount) {
+      winner = value;
+      winnerCount = count;
+    }
+  }
+  return winner;
+}
+
 function formatDateId(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
 }
 
 function roundToOne(value) {
