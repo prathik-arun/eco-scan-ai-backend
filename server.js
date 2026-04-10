@@ -27,13 +27,12 @@ const systemPrompt =
   "Return strict JSON with keys: kilograms, category, explanation, activity, impactLevel, suggestion. " +
   "kilograms must be a number in kg CO2e. category must be one short label like Transport, Food, Energy, Shopping, Waste, or Mixed. " +
   "explanation must be under 140 characters. activity must be a short normalized activity label. " +
-  "impactLevel must be either High or Low. Mark it High when the footprint is meaningfully above a low-impact alternative for the same task. " +
-  "suggestion must be a short practical swap. If impactLevel is Low, suggestion should be an empty string.";
+  "impactLevel must be either High or Low. Mark it High when kilograms is 3 or more. " +
+  "suggestion must be a short practical lower-carbon swap when impactLevel is High. If impactLevel is Low, suggestion should be an empty string.";
 
 const server = createServer(async (req, res) => {
   addCors(res);
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  console.log(`[${new Date().toISOString()}] ${req.method} ${requestUrl.pathname}`);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -53,28 +52,22 @@ const server = createServer(async (req, res) => {
 
   try {
     if ((req.method === "POST" || req.method === "GET") && requestUrl.pathname === "/analyze-text") {
-      const textBody = req.method === "GET"
+      const activityText = req.method === "GET"
         ? (requestUrl.searchParams.get("input") || "").trim()
         : (await readText(req)).trim();
-      if (!textBody) {
+
+      if (!activityText) {
         sendJson(res, 400, { error: "Text input is empty." });
         return;
       }
 
-      const aiResult = await analyzeText(textBody);
-      await trySaveAiResult({
-        inputType: inferInputType(textBody),
-        activityText: textBody,
+      const aiResult = await analyzeText(activityText);
+      saveAiResultLater({
+        inputType: inferInputType(activityText),
+        activityText,
         aiResult
       });
-      sendJson(res, 200, [
-        aiResult.kilograms,
-        aiResult.category,
-        aiResult.explanation,
-        aiResult.activity,
-        aiResult.impactLevel,
-        aiResult.suggestion
-      ]);
+      sendAiResult(res, aiResult);
       return;
     }
 
@@ -86,19 +79,12 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeImage(buffer, contentType || "image/jpeg");
-      await trySaveAiResult({
+      saveAiResultLater({
         inputType: "scan",
         activityText: aiResult.activity,
         aiResult
       });
-      sendJson(res, 200, [
-        aiResult.kilograms,
-        aiResult.category,
-        aiResult.explanation,
-        aiResult.activity,
-        aiResult.impactLevel,
-        aiResult.suggestion
-      ]);
+      sendAiResult(res, aiResult);
       return;
     }
 
@@ -122,6 +108,17 @@ function addCors(res) {
 function sendJson(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+}
+
+function sendAiResult(res, aiResult) {
+  sendJson(res, 200, [
+    aiResult.kilograms,
+    aiResult.category,
+    aiResult.explanation,
+    aiResult.activity,
+    aiResult.impactLevel,
+    aiResult.suggestion
+  ]);
 }
 
 function readText(req) {
@@ -158,33 +155,15 @@ async function analyzeText(activityText) {
       { role: "system", content: systemPrompt },
       {
         role: "user",
-        content:
-          "Estimate the footprint for this activity and respond with JSON only: " +
-          activityText
+        content: "Estimate the footprint for this activity and respond with JSON only: " + activityText
       }
     ]
   };
 
-  const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(JSON.stringify(data));
-  }
-
-  const content = data?.choices?.[0]?.message?.content || "";
-  return normalizeAiResult(extractJson(content));
+  return requestOpenAi(payload);
 }
 
 async function analyzeImage(buffer, contentType) {
-  const base64Image = buffer.toString("base64");
   const payload = {
     model: OPENAI_MODEL,
     temperature: 0.2,
@@ -195,13 +174,12 @@ async function analyzeImage(buffer, contentType) {
         content: [
           {
             type: "text",
-            text:
-              "Look at the uploaded photo and estimate the carbon footprint of the main logged activity or purchase. Return JSON only."
+            text: "Look at the uploaded photo and estimate the carbon footprint of the main logged activity or purchase. Return JSON only."
           },
           {
             type: "image_url",
             image_url: {
-              url: `data:${contentType};base64,${base64Image}`
+              url: `data:${contentType};base64,${buffer.toString("base64")}`
             }
           }
         ]
@@ -209,6 +187,10 @@ async function analyzeImage(buffer, contentType) {
     ]
   };
 
+  return requestOpenAi(payload);
+}
+
+async function requestOpenAi(payload) {
   const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -238,7 +220,7 @@ function extractJson(text) {
 
 function normalizeAiResult(result) {
   const kilograms = Number(result.kilograms || result.kg || 0);
-  const impactLevel = inferImpactLevel(kilograms);
+  const impactLevel = kilograms >= 3 ? "High" : "Low";
   const suggestion = String(result.suggestion || "");
 
   return {
@@ -253,12 +235,14 @@ function normalizeAiResult(result) {
   };
 }
 
-function inferImpactLevel(kilograms) {
-  return kilograms >= 3 ? "High" : "Low";
-}
-
 function inferInputType(activityText) {
   return /\b(spoke|said|voice)\b/i.test(activityText) ? "voice" : "type";
+}
+
+function saveAiResultLater(payload) {
+  saveAiResult(payload).catch((error) => {
+    console.error("Firestore save skipped due to error:", error);
+  });
 }
 
 async function saveAiResult({ inputType, activityText, aiResult }) {
@@ -303,14 +287,6 @@ async function saveAiResult({ inputType, activityText, aiResult }) {
       createdAt: updatedAt
     });
   });
-}
-
-async function trySaveAiResult(payload) {
-  try {
-    await saveAiResult(payload);
-  } catch (error) {
-    console.error("Firestore save skipped due to error:", error);
-  }
 }
 
 function formatDateId(date) {
