@@ -21,7 +21,6 @@ if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY && !adm
 }
 
 const firestore = admin.apps.length ? admin.firestore() : null;
-const trendImageCache = new Map();
 
 const systemPrompt =
   "You estimate the carbon footprint of one personal activity. " +
@@ -99,14 +98,22 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && requestUrl.pathname === "/weekly-trends-image") {
+  if (req.method === "GET" && requestUrl.pathname === "/weekly-chart-pairs") {
     try {
-      const imageType = requestUrl.searchParams.get("type") === "category" ? "category" : "bar";
-      const image = await getWeeklyTrendsImage(imageType);
-      sendImage(res, 200, image);
+      sendText(res, 200, await getWeeklyChartPairsText());
     } catch (error) {
-      console.error("Weekly trends image failed:", error);
-      sendText(res, 500, "Trend image generation failed.");
+      console.error("Weekly chart pairs failed:", error);
+      sendText(res, 200, "1,0,2,0,3,0,4,0,5,0,6,0,7,0");
+    }
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/category-chart-pairs") {
+    try {
+      sendText(res, 200, await getCategoryChartPairsText());
+    } catch (error) {
+      console.error("Category chart pairs failed:", error);
+      sendText(res, 200, "No data,1");
     }
     return;
   }
@@ -179,14 +186,6 @@ function sendJson(res, status, body) {
 function sendText(res, status, body) {
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(body);
-}
-
-function sendImage(res, status, imageBuffer) {
-  res.writeHead(status, {
-    "Content-Type": "image/png",
-    "Cache-Control": "public, max-age=600"
-  });
-  res.end(imageBuffer);
 }
 
 function sendAiResult(res, aiResult) {
@@ -495,24 +494,26 @@ async function getWeeklyTrendsText() {
   ].join("\n");
 }
 
-async function getWeeklyTrendsImage(type) {
+async function getWeeklyChartPairsText() {
   const trends = await getWeeklyTrendData();
-  const cacheKey = JSON.stringify({
-    type,
-    days: trends.dayRows.map((day) => [day.id, day.total]),
-    categories: trends.categoryRows
-  });
-
-  if (trendImageCache.has(cacheKey)) {
-    return trendImageCache.get(cacheKey);
+  if (!trends.dayRows.length) {
+    return "1,0,2,0,3,0,4,0,5,0,6,0,7,0";
   }
 
-  const chartUrl = type === "category"
-    ? buildCategoryChartUrl(trends)
-    : buildBarChartUrl(trends);
-  const image = await fetchChartImage(chartUrl);
-  trendImageCache.set(cacheKey, image);
-  return image;
+  return trends.dayRows
+    .map((day, index) => `${index + 1},${day.total}`)
+    .join(",");
+}
+
+async function getCategoryChartPairsText() {
+  const trends = await getWeeklyTrendData();
+  if (!trends.categoryRows.length) {
+    return "No data,1";
+  }
+
+  return trends.categoryRows
+    .map((row) => `${safeChartLabel(row.category)},${row.total}`)
+    .join(",");
 }
 
 async function getWeeklyTrendData() {
@@ -653,6 +654,10 @@ function categoryColor(category) {
   return colors[category] || "#168357";
 }
 
+function safeChartLabel(value) {
+  return String(value).replace(/,/g, " ").slice(0, 18);
+}
+
 function earnedBadgeText(badge) {
   return [
     `UNLOCKED BADGE: ${badge.name}`,
@@ -665,92 +670,6 @@ function lockedBadgeText(badge) {
     `LOCKED BADGE: ${badge.name}`,
     `  ${badge.detail}`
   ].join("\n");
-}
-
-function buildBarChartUrl({ dayRows, weekTotal }) {
-  const labels = dayRows.map((day) => day.label);
-  const values = dayRows.map((day) => day.total);
-  const colors = values.map((value) => value >= 10 ? "#DD4B39" : value >= 3 ? "#F59E0B" : "#168357");
-  const chart = {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        label: "kg CO2e",
-        data: values,
-        backgroundColor: colors,
-        borderRadius: 12,
-        borderSkipped: false
-      }]
-    },
-    options: {
-      plugins: {
-        title: {
-          display: true,
-          text: `Weekly Carbon Footprint - ${weekTotal} kg CO2e`,
-          color: "#0B6B43",
-          font: { size: 24, weight: "bold" }
-        },
-        legend: { display: false }
-      },
-      scales: {
-        x: { ticks: { color: "#26352D", font: { size: 16, weight: "bold" } }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: "#6E7F73" }, grid: { color: "#E5EFE8" } }
-      }
-    }
-  };
-  return quickChartUrl(chart);
-}
-
-function buildCategoryChartUrl({ categoryRows }) {
-  const rows = categoryRows.length ? categoryRows : [{ category: "No data", total: 1 }];
-  const chart = {
-    type: "doughnut",
-    data: {
-      labels: rows.map((row) => row.category),
-      datasets: [{
-        data: rows.map((row) => row.total),
-        backgroundColor: rows.map((row) => categoryColor(row.category)),
-        borderColor: "#FFFFFF",
-        borderWidth: 4
-      }]
-    },
-    options: {
-      plugins: {
-        title: {
-          display: true,
-          text: "Breakdown By Category",
-          color: "#0B6B43",
-          font: { size: 26, weight: "bold" }
-        },
-        legend: {
-          position: "bottom",
-          labels: { color: "#26352D", font: { size: 15, weight: "bold" } }
-        }
-      }
-    }
-  };
-  return quickChartUrl(chart);
-}
-
-function quickChartUrl(chart) {
-  const params = new URLSearchParams({
-    width: "720",
-    height: "520",
-    backgroundColor: "white",
-    format: "png",
-    chart: JSON.stringify(chart)
-  });
-  return `https://quickchart.io/chart?${params.toString()}`;
-}
-
-async function fetchChartImage(chartUrl) {
-  const response = await fetch(chartUrl);
-  if (!response.ok) {
-    throw new Error(`Chart image failed with status ${response.status}`);
-  }
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
 }
 
 function escapeHtml(value) {
