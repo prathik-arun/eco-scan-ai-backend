@@ -98,6 +98,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/weekly-trends-page") {
+    try {
+      sendHtml(res, 200, await getWeeklyTrendsHtml());
+    } catch (error) {
+      console.error("Weekly trends page failed:", error);
+      sendHtml(res, 200, emptyWeeklyTrendsHtml());
+    }
+    return;
+  }
+
   if (req.method === "GET" && requestUrl.pathname === "/weekly-chart-pairs") {
     try {
       sendText(res, 200, await getWeeklyChartPairsText());
@@ -185,6 +195,14 @@ function sendJson(res, status, body) {
 
 function sendText(res, status, body) {
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end(body);
+}
+
+function sendHtml(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
   res.end(body);
 }
 
@@ -484,8 +502,25 @@ async function getWeeklyTrendsText() {
   const highTipCount = allEntries.filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion).length;
   const earnedBadges = getEarnedBadges({ allEntries, activeDays, dayRows, categoryTotals, highTipCount });
   const lockedBadges = getLockedBadges(earnedBadges);
+  const barRows = dayRows.map((day) => {
+    const barLength = Math.max(day.total > 0 ? 1 : 0, Math.round((day.total / maxDayTotal) * 12));
+    const bar = barLength > 0 ? "#".repeat(barLength) : ".";
+    return `${day.label.padEnd(3)} | ${bar.padEnd(12)} ${day.total} kg`;
+  });
+  const categoryRows = [...categoryTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, total]) => `${category}: ${total} kg CO2e`);
 
   return [
+    "WEEKLY BAR GRAPH",
+    `Total this week: ${weekTotal} kg CO2e`,
+    "Low = under 3 kg, Medium = 3-9.9 kg, High = 10+ kg",
+    "",
+    ...barRows,
+    "",
+    "BREAKDOWN BY CATEGORY",
+    ...(categoryRows.length ? categoryRows : ["No category data yet."]),
+    "",
     "BADGES EARNED",
     ...(earnedBadges.length ? earnedBadges.map((badge) => earnedBadgeText(badge)) : ["No badges earned yet. Log your first activity to begin."]),
     "",
@@ -516,13 +551,206 @@ async function getCategoryChartPairsText() {
     .join(",");
 }
 
+async function getWeeklyTrendsHtml() {
+  const trends = await getWeeklyTrendData();
+  const dayRows = trends.dayRows.length
+    ? trends.dayRows
+    : getCurrentWeekDateIds().map((day) => ({ ...day, total: 0 }));
+  const maxDayTotal = Math.max(1, ...dayRows.map((day) => Number(day.total || 0)));
+  const categories = trends.categoryRows.length
+    ? trends.categoryRows
+    : [{ category: "No data yet", total: 0 }];
+  const maxCategoryTotal = Math.max(1, ...categories.map((row) => Number(row.total || 0)));
+  const earnedBadges = getTrendBadges(trends).earned;
+  const lockedBadges = getTrendBadges(trends).locked;
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0 14px 24px;
+      background: #f3f8f4;
+      color: #24382f;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    .hero {
+      margin: 0 -14px 18px;
+      padding: 22px 20px 20px;
+      background: linear-gradient(135deg, #08633f, #0d7f52);
+      color: white;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 24px; letter-spacing: .3px; }
+    .sub { margin-top: 4px; opacity: .88; font-size: 14px; }
+    .card {
+      background: white;
+      border: 1px solid #dfe8e1;
+      border-radius: 14px;
+      box-shadow: 0 2px 8px rgba(20, 61, 42, .08);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    .total {
+      text-align: center;
+      padding: 8px 0 4px;
+    }
+    .total .value {
+      color: #149b6a;
+      font-family: Arial, sans-serif;
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .total .label { color: #66756d; font-size: 13px; margin-top: 5px; }
+    .bars {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      align-items: end;
+      gap: 8px;
+      height: 160px;
+      padding: 8px 2px 0;
+    }
+    .bar-wrap {
+      height: 126px;
+      display: flex;
+      align-items: end;
+      justify-content: center;
+    }
+    .bar {
+      width: 100%;
+      min-height: 4px;
+      border-radius: 7px 7px 2px 2px;
+      background: #5bc99d;
+      position: relative;
+    }
+    .bar.medium { background: #c57c14; }
+    .bar.high { background: #e6464f; }
+    .bar span {
+      position: absolute;
+      top: -18px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: Arial, sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      color: #304138;
+      white-space: nowrap;
+    }
+    .day { text-align: center; color: #6e7a72; font-size: 12px; }
+    .legend { color: #7a827c; font-size: 12px; text-align: center; margin-top: 10px; }
+    h2 {
+      font-size: 15px;
+      letter-spacing: 1.3px;
+      margin-bottom: 12px;
+      color: #3c3d37;
+    }
+    .cat-row {
+      display: grid;
+      grid-template-columns: 88px 1fr 54px;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0;
+      font-size: 14px;
+    }
+    .track {
+      height: 12px;
+      border-radius: 20px;
+      background: #edf0ed;
+      overflow: hidden;
+    }
+    .fill {
+      height: 100%;
+      border-radius: 20px;
+      background: #149b6a;
+    }
+    .cat-row:nth-child(2) .fill { background: #e6464f; }
+    .cat-row:nth-child(3) .fill { background: #c57c14; }
+    .kg {
+      text-align: right;
+      color: #149b6a;
+      font-family: Arial, sans-serif;
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .badge-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .badge {
+      min-height: 78px;
+      border-radius: 12px;
+      padding: 12px 8px;
+      text-align: center;
+      background: #e7f7ef;
+      border: 1px solid #d2efdf;
+      color: #0d6843;
+    }
+    .badge.locked {
+      background: #f1f1ed;
+      border-color: #e4e2dc;
+      color: #8c8a82;
+      opacity: .92;
+    }
+    .badge .icon { font-size: 23px; line-height: 1.1; }
+    .badge .name { margin-top: 6px; font-family: Arial, sans-serif; font-size: 12px; font-weight: 800; }
+    .badge .detail { margin-top: 4px; font-size: 11px; line-height: 1.2; }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <h1>Weekly Trends</h1>
+    <p class="sub">${escapeHtml(getWeekRangeText(dayRows))}</p>
+  </section>
+
+  <section class="card total">
+    <div class="value">${formatKg(trends.weekTotal)} kg CO2e</div>
+    <p class="label">Weekly total from saved AI logs</p>
+  </section>
+
+  <section class="card">
+    <h2>WEEKLY BAR GRAPH</h2>
+    <div class="bars">
+      ${dayRows.map((day) => weeklyBarHtml(day, maxDayTotal)).join("")}
+    </div>
+    <p class="legend">Green = under 3 kg/day · Orange = 3-9.9 kg · Red = 10+ kg</p>
+  </section>
+
+  <section class="card">
+    <h2>BREAKDOWN BY CATEGORY</h2>
+    ${categories.map((row) => categoryRowHtml(row, maxCategoryTotal)).join("")}
+  </section>
+
+  <section class="card">
+    <h2>BADGES EARNED</h2>
+    <div class="badge-grid">
+      ${earnedBadges.map((badge) => badgeHtml(badge, false)).join("")}
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>BADGES TO EARN</h2>
+    <div class="badge-grid">
+      ${lockedBadges.map((badge) => badgeHtml(badge, true)).join("")}
+    </div>
+  </section>
+</body>
+</html>`;
+}
+
 async function getWeeklyTrendData() {
   if (!firestore) {
-    return { dayRows: [], categoryRows: [], weekTotal: 0 };
+    return { dayRows: [], categoryRows: [], weekTotal: 0, activeDays: 0, highTipCount: 0 };
   }
 
   const dates = getCurrentWeekDateIds();
   const dayRows = [];
+  const allEntries = [];
   const categoryTotals = new Map();
 
   for (const dateInfo of dates) {
@@ -538,6 +766,7 @@ async function getWeeklyTrendData() {
       const category = entry.category || "Mixed";
       categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
     }
+    allEntries.push(...entries);
 
     dayRows.push({ ...dateInfo, total: roundToOne(total) });
   }
@@ -549,8 +778,107 @@ async function getWeeklyTrendData() {
   return {
     dayRows,
     categoryRows,
-    weekTotal: roundToOne(dayRows.reduce((sum, day) => sum + day.total, 0))
+    weekTotal: roundToOne(dayRows.reduce((sum, day) => sum + day.total, 0)),
+    activeDays: dayRows.filter((day) => day.total > 0).length,
+    highTipCount: allEntries.filter((entry) => entry.impactLevel === "High" && entry.aiSuggestion).length
   };
+}
+
+function getTrendBadges(trends) {
+  const earned = [];
+  const locked = [];
+  const badgeRules = [
+    {
+      name: "First Footprint",
+      icon: "🌱",
+      detail: "Logged your first carbon activity.",
+      earned: trends.weekTotal > 0
+    },
+    {
+      name: "Carbon Detective",
+      icon: "🔎",
+      detail: "Tracked 3 different categories.",
+      earned: trends.categoryRows.length >= 3
+    },
+    {
+      name: "Swap Seeker",
+      icon: "💡",
+      detail: "Unlocked an AI swap suggestion.",
+      earned: trends.highTipCount > 0
+    },
+    {
+      name: "Habit Builder",
+      icon: "📅",
+      detail: "Log activities on 3 days this week.",
+      earned: trends.activeDays >= 3
+    },
+    {
+      name: "Light Day",
+      icon: "🍃",
+      detail: "Keep one day at 3 kg CO2e or less.",
+      earned: trends.dayRows.some((day) => day.total > 0 && day.total <= 3)
+    },
+    {
+      name: "Category Master",
+      icon: "🏅",
+      detail: "Track 5 different categories.",
+      earned: trends.categoryRows.length >= 5
+    }
+  ];
+
+  for (const badge of badgeRules) {
+    (badge.earned ? earned : locked).push(badge);
+  }
+
+  return {
+    earned: earned.length ? earned : [{ name: "Start Logging", icon: "🌿", detail: "Log your first activity to earn badges." }],
+    locked
+  };
+}
+
+function weeklyBarHtml(day, maxDayTotal) {
+  const total = Number(day.total || 0);
+  const height = Math.max(total > 0 ? 8 : 3, Math.round((total / maxDayTotal) * 116));
+  const impactClass = total >= 10 ? "high" : total >= 3 ? "medium" : "";
+  return `
+    <div>
+      <div class="bar-wrap">
+        <div class="bar ${impactClass}" style="height:${height}px"><span>${formatKg(total)}</span></div>
+      </div>
+      <div class="day">${escapeHtml(day.label)}</div>
+    </div>`;
+}
+
+function categoryRowHtml(row, maxCategoryTotal) {
+  const total = Number(row.total || 0);
+  const width = Math.max(total > 0 ? 8 : 3, Math.round((total / maxCategoryTotal) * 100));
+  return `
+    <div class="cat-row">
+      <div>${escapeHtml(row.category)}</div>
+      <div class="track"><div class="fill" style="width:${width}%"></div></div>
+      <div class="kg">${formatKg(total)} kg</div>
+    </div>`;
+}
+
+function badgeHtml(badge, locked) {
+  return `
+    <div class="badge ${locked ? "locked" : ""}">
+      <div class="icon">${escapeHtml(badge.icon)}</div>
+      <div class="name">${locked ? "Locked: " : ""}${escapeHtml(badge.name)}</div>
+      <div class="detail">${escapeHtml(badge.detail)}</div>
+    </div>`;
+}
+
+function getWeekRangeText(dayRows) {
+  if (!dayRows.length) {
+    return "This week";
+  }
+
+  return `${dayRows[0].id} to ${dayRows[dayRows.length - 1].id}`;
+}
+
+function formatKg(value) {
+  return String(roundToOne(Number(value || 0))).replace(/\.0$/, "");
 }
 
 async function getTodayEntries() {
@@ -588,6 +916,39 @@ function emptyWeeklyTrendsText() {
     lockedBadgeText({ name: "Habit Builder", detail: "Log activities on 3 days this week." }),
     lockedBadgeText({ name: "Carbon Detective", detail: "Track 3 different categories." })
   ].join("\n");
+}
+
+function emptyWeeklyTrendsHtml() {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      margin: 0;
+      padding: 24px 14px;
+      background: #f3f8f4;
+      color: #204e37;
+      font-family: Arial, sans-serif;
+    }
+    .card {
+      background: white;
+      border: 1px solid #dfe8e1;
+      border-radius: 14px;
+      padding: 16px;
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    p { margin: 0; line-height: 1.5; color: #5b7364; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Weekly Trends</h1>
+    <p>No saved weekly data yet. Add a few logs and the chart will appear here.</p>
+  </div>
+</body>
+</html>`;
 }
 
 function getCurrentWeekDateIds() {
