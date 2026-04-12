@@ -270,7 +270,12 @@ async function analyzeImage(buffer, contentType) {
         content: [
           {
             type: "text",
-            text: "Look at the uploaded photo and estimate the carbon footprint of the main logged activity or purchase. Return JSON only."
+            text:
+              "Look at the uploaded photo and estimate the carbon footprint. " +
+              "The image may be a restaurant bill with multiple items, a grocery/product package, or a direct photo of food or an item. " +
+              "If it is a bill or receipt, identify the main items, infer the likely purchase or meal, and estimate the total footprint of that purchase as one logged activity. " +
+              "If it is a single product or food item, estimate the footprint of that item. " +
+              "Use a short clear activity name, a practical category, and a realistic kg CO2e estimate. Return JSON only."
           },
           {
             type: "image_url",
