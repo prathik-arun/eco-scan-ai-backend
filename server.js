@@ -25,7 +25,7 @@ const firestore = admin.apps.length ? admin.firestore() : null;
 const systemPrompt =
   "You estimate the carbon footprint of one personal activity. " +
   "Return strict JSON with keys: kilograms, category, explanation, activity, impactLevel, suggestion. " +
-  "kilograms must be a number in kg CO2e. category must be one short label like Transport, Food, Energy, Shopping, Waste, or Mixed. " +
+  "kilograms must be a number in kg CO2e. category must be one short label like Transport, Food, Energy, Shopping, Waste, or Others. " +
   "explanation must be under 140 characters. activity must be a short normalized activity label. " +
   "impactLevel must be either High or Low. Mark it High when kilograms is 3 or more. " +
   "suggestion must be a short practical lower-carbon swap when impactLevel is High. If impactLevel is Low, suggestion should be an empty string.";
@@ -321,7 +321,7 @@ function normalizeAiResult(result) {
 
   return {
     kilograms,
-    category: String(result.category || "Mixed"),
+    category: String(result.category || "Others"),
     explanation: String(result.explanation || "AI estimated the footprint from the provided input."),
     activity: String(result.activity || "AI activity"),
     impactLevel,
@@ -419,7 +419,7 @@ async function getTodaySummary() {
     ].join("\n"));
 
   const tipsText = highTips.length ? highTips.join("\n\n") : emptyTipsText();
-  const topSource = mostCommon(entries.map((entry) => entry.category).filter(Boolean)) || "Mixed";
+  const topSource = mostCommon(entries.map((entry) => entry.category).filter(Boolean)) || "Others";
 
   return [dayTotalKg, logText, tipsText, topSource];
 }
@@ -495,7 +495,7 @@ async function getWeeklyTrendsText() {
   const categoryTotals = new Map();
 
   for (const entry of allEntries) {
-    const category = entry.category || "Mixed";
+    const category = entry.category || "Others";
     categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
   }
 
@@ -763,7 +763,7 @@ async function getWeeklyTrendData() {
       : roundToOne(entries.reduce((sum, entry) => sum + Number(entry.carbonKg || 0), 0));
 
     for (const entry of entries) {
-      const category = entry.category || "Mixed";
+      const category = entry.category || "Others";
       categoryTotals.set(category, roundToOne((categoryTotals.get(category) || 0) + Number(entry.carbonKg || 0)));
     }
     allEntries.push(...entries);
@@ -899,7 +899,7 @@ async function getTodayEntries() {
 }
 
 function emptyTodaySummary() {
-  return [0, "No saved logs for today yet.", emptyTipsText(), "Mixed"];
+  return [0, "No saved logs for today yet.", emptyTipsText(), "Others"];
 }
 
 function emptyTipsText() {
@@ -1010,7 +1010,7 @@ function categoryColor(category) {
     Energy: "#2563EB",
     Shopping: "#7C3AED",
     Waste: "#64748B",
-    Mixed: "#168357"
+    Others: "#168357"
   };
   return colors[category] || "#168357";
 }
