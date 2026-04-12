@@ -535,7 +535,7 @@ async function getTodayLogText() {
     const carbonKg = Number(entry.carbonKg || 0);
     const impactColor = impact === "High" ? "#DD4B39" : "#2563EB";
     const agentLine = entry.inputType === "sms"
-      ? `<font color="#5B7364"><i>Detected using AI agent</i></font>`
+      ? `${aiAgentBadgeHtml()} <font color="#5B7364"><i>Detected using AI agent</i></font>`
       : "";
 
     return [
@@ -548,6 +548,16 @@ async function getTodayLogText() {
   });
 
   return rows.join("<br/><br/>------------------------------<br/><br/>");
+}
+
+function aiAgentBadgeHtml() {
+  return [
+    `<span style="display:inline-block;vertical-align:middle;min-width:28px;height:22px;`,
+    `line-height:22px;text-align:center;border-radius:8px;padding:0 6px;`,
+    `font-weight:700;font-size:11px;font-family:Arial,sans-serif;`,
+    `color:#ffffff;background:linear-gradient(135deg,#29d3c2,#3d5afe,#9333ea);`,
+    `box-shadow:0 1px 4px rgba(61,90,254,.25);margin-right:6px;">AI ✦</span>`
+  ].join("");
 }
 
 async function getTodayTipsText() {
