@@ -30,6 +30,10 @@ const systemPrompt =
   "impactLevel must be either High or Low. Mark it High when kilograms is 3 or more. " +
   "suggestion must be a short practical lower-carbon swap when impactLevel is High. If impactLevel is Low, suggestion should be an empty string.";
 
+const smsPromptPrefix =
+  "This input is an incoming SMS about a bill, purchase, fuel refill, electricity usage, food order, or payment. " +
+  "Infer the real-world activity behind the SMS and estimate its carbon footprint. Respond with JSON only: ";
+
 const server = createServer(async (req, res) => {
   addCors(res);
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -154,6 +158,28 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && requestUrl.pathname === "/ingest-sms") {
+      const smsText = (await readText(req)).trim();
+      if (!smsText) {
+        sendJson(res, 200, { saved: false, reason: "empty" });
+        return;
+      }
+
+      if (!isLikelyBillSms(smsText)) {
+        sendJson(res, 200, { saved: false, reason: "ignored" });
+        return;
+      }
+
+      const aiResult = await analyzeSmsText(smsText);
+      saveAiResultLater({
+        inputType: "sms",
+        activityText: smsText,
+        aiResult
+      });
+      sendJson(res, 200, { saved: true });
+      return;
+    }
+
     if (req.method === "POST" && requestUrl.pathname === "/analyze-image") {
       const { buffer, contentType } = await readBuffer(req);
       if (!buffer.length) {
@@ -252,6 +278,22 @@ async function analyzeText(activityText) {
       {
         role: "user",
         content: "Estimate the footprint for this activity and respond with JSON only: " + activityText
+      }
+    ]
+  };
+
+  return requestOpenAi(payload);
+}
+
+async function analyzeSmsText(activityText) {
+  const payload = {
+    model: OPENAI_MODEL,
+    temperature: 0.2,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: smsPromptPrefix + activityText
       }
     ]
   };
@@ -384,6 +426,14 @@ function inferInputType(activityText) {
   return /\b(spoke|said|voice)\b/i.test(activityText) ? "voice" : "type";
 }
 
+function isLikelyBillSms(text) {
+  const normalized = String(text || "").toLowerCase();
+  const keywordRegex =
+    /\b(petrol|fuel|diesel|electricity|power bill|restaurant|cafe|dining|swiggy|zomato|uber|ola|invoice|receipt|bill|paid|payment|purchase|order|supermarket|grocery|mart|shell|hpcl|bpcl|bharat petroleum|indianoil|ioc|hotel|eat|food)\b/;
+  const amountRegex = /\b(rs\.?|inr)\s?\d+|₹\s?\d+|\bcharged\b|\bdebited\b|\bspent\b/;
+  return keywordRegex.test(normalized) || amountRegex.test(normalized);
+}
+
 function saveAiResultLater(payload) {
   saveAiResult(payload).catch((error) => {
     console.error("Firestore save skipped due to error:", error);
@@ -484,13 +534,17 @@ async function getTodayLogText() {
     const impact = entry.impactLevel || "Low";
     const carbonKg = Number(entry.carbonKg || 0);
     const impactColor = impact === "High" ? "#DD4B39" : "#2563EB";
+    const agentLine = entry.inputType === "sms"
+      ? `<font color="#5B7364"><i>Detected using AI agent</i></font>`
+      : "";
 
     return [
       `<b>LOG ENTRY ${index + 1}</b>`,
       `<font color="#5B7364">Activity:</font> ${activity}`,
       `Carbon: <font color="${impactColor}"><b>${carbonKg} kg CO2e</b></font>`,
-      `Impact: <font color="${impactColor}"><b>${impact}</b></font>`
-    ].join("<br/>");
+      `Impact: <font color="${impactColor}"><b>${impact}</b></font>`,
+      agentLine
+    ].filter(Boolean).join("<br/>");
   });
 
   return rows.join("<br/><br/>------------------------------<br/><br/>");
