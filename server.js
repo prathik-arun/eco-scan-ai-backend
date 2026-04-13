@@ -82,6 +82,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/today-impact-text") {
+    try {
+      sendText(res, 200, await getTodayImpactText());
+    } catch (error) {
+      console.error("Today impact text failed:", error);
+      sendText(res, 200, "Low, good job.");
+    }
+    return;
+  }
+
   if (req.method === "GET" && requestUrl.pathname === "/today-tips-text") {
     try {
       sendText(res, 200, await getTodayTipsText());
@@ -580,6 +590,65 @@ async function getTodayTotalText() {
   return String(dayTotalKg);
 }
 
+async function getTodayImpactText() {
+  const { dayTotalKg } = await getTodayEntries();
+
+  if (dayTotalKg < 10) {
+    return "Low impact today, good job.";
+  }
+
+  if (dayTotalKg <= 20) {
+    return "Mid impact today, could do better.";
+  }
+
+  if (!OPENAI_API_KEY) {
+    return highImpactFallback(dayTotalKg);
+  }
+
+  try {
+    const payload = {
+      model: OPENAI_MODEL,
+      temperature: 0.4,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write one short sentence under 18 words about carbon footprint impact. " +
+            "Be vivid but factual, easy to understand, and suitable for a mobile app. " +
+            "Do not use markdown. Do not mention exact emissions formulas."
+        },
+        {
+          role: "user",
+          content:
+            `Today's total is ${dayTotalKg} kg CO2e. ` +
+            "Give one short comparison sentence such as car distance, electricity use, or tree absorption."
+        }
+      ]
+    };
+
+    const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json();
+    const content = String(data?.choices?.[0]?.message?.content || "").trim();
+
+    if (!response.ok || !content) {
+      return highImpactFallback(dayTotalKg);
+    }
+
+    return content.replace(/\s+/g, " ");
+  } catch (error) {
+    console.error("AI today impact message failed:", error);
+    return highImpactFallback(dayTotalKg);
+  }
+}
+
 async function getWeeklyTrendsText() {
   if (!firestore) {
     return emptyWeeklyTrendsText();
@@ -1013,6 +1082,11 @@ async function getTodayEntries() {
 
 function emptyTodaySummary() {
   return [0, "No saved logs for today yet.", emptyTipsText(), "Others"];
+}
+
+function highImpactFallback(dayTotalKg) {
+  const carKm = Math.max(1, Math.round(dayTotalKg * 4));
+  return `High impact today. That's roughly like driving a petrol car for ${carKm} km.`;
 }
 
 function emptyTipsText() {
