@@ -142,6 +142,37 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && requestUrl.pathname === "/save-manual-entry") {
+    try {
+      const rawBody = (await readText(req)).trim();
+      const parts = rawBody.split("|||");
+      const activityText = String(parts[0] || "").trim();
+      if (!activityText) {
+        sendJson(res, 400, { error: "Missing activityText." });
+        return;
+      }
+
+      await saveAiResult({
+        inputType: String(parts[2] || "type"),
+        activityText,
+        aiResult: {
+          kilograms: Number(parts[3] || 0),
+          category: String(parts[4] || "Others"),
+          explanation: String(parts[5] || "AI estimated the footprint from the provided input."),
+          activity: String(parts[1] || activityText),
+          impactLevel: String(parts[6] || inferImpactLevel(Number(parts[3] || 0))),
+          suggestion: String(parts[7] || "")
+        }
+      });
+
+      sendJson(res, 200, { saved: true });
+    } catch (error) {
+      console.error("Save manual entry failed:", error);
+      sendJson(res, 500, { error: error instanceof Error ? error.message : "Unknown save error." });
+    }
+    return;
+  }
+
   if (!OPENAI_API_KEY) {
     sendJson(res, 503, { error: "Missing OPENAI_API_KEY on the backend." });
     return;
@@ -159,11 +190,6 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeText(activityText);
-      saveAiResultLater({
-        inputType: inferInputType(activityText),
-        activityText,
-        aiResult
-      });
       sendAiResult(res, aiResult);
       return;
     }
@@ -198,11 +224,6 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeImage(buffer, normalizeImageContentType(buffer, contentType));
-      saveAiResultLater({
-        inputType: "scan",
-        activityText: aiResult.activity,
-        aiResult
-      });
       sendAiResult(res, aiResult);
       return;
     }
@@ -417,7 +438,7 @@ function extractJson(text) {
 
 function normalizeAiResult(result) {
   const kilograms = Number(result.kilograms || result.kg || 0);
-  const impactLevel = kilograms >= 3 ? "High" : "Low";
+  const impactLevel = inferImpactLevel(kilograms);
   const suggestion = String(result.suggestion || "");
 
   return {
@@ -430,6 +451,10 @@ function normalizeAiResult(result) {
       ? (suggestion || "Choose a lower-carbon alternative for this activity.")
       : ""
   };
+}
+
+function inferImpactLevel(kilograms) {
+  return Number(kilograms || 0) >= 3 ? "High" : "Low";
 }
 
 function inferInputType(activityText) {
