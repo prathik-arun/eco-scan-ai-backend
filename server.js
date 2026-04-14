@@ -207,7 +207,7 @@ const server = createServer(async (req, res) => {
       }
 
       const aiResult = await analyzeSmsText(smsText);
-      saveAiResultLater({
+      await saveAiResult({
         inputType: "sms",
         activityText: smsText,
         aiResult
@@ -464,8 +464,8 @@ function inferInputType(activityText) {
 function isLikelyBillSms(text) {
   const normalized = String(text || "").toLowerCase();
   const keywordRegex =
-    /\b(petrol|fuel|diesel|electricity|power bill|restaurant|cafe|dining|swiggy|zomato|uber|ola|invoice|receipt|bill|paid|payment|purchase|order|supermarket|grocery|mart|shell|hpcl|bpcl|bharat petroleum|indianoil|ioc|hotel|eat|food)\b/;
-  const amountRegex = /\b(rs\.?|inr)\s?\d+|₹\s?\d+|\bcharged\b|\bdebited\b|\bspent\b/;
+    /\b(petrol|fuel|diesel|electricity|power bill|restaurant|cafe|dining|swiggy|zomato|uber|ola|invoice|receipt|bill|paid|payment|purchase|purchased|order|ordered|supermarket|grocery|mart|shell|hpcl|bpcl|bharat petroleum|indianoil|ioc|hotel|eat|food|txn|transaction|merchant|upi|debit card|credit card|amazon|flipkart|myntra|blinkit|zepto|bigbasket|instamart|restaurant|lunch|dinner|breakfast|meal)\b/;
+  const amountRegex = /\b(rs\.?|inr)\s?\d+|₹\s?\d+|\bcharged\b|\bdebited\b|\bspent\b|\bpaid\b.*\bto\b|\bpayment\b.*\bof\b/;
   return keywordRegex.test(normalized) || amountRegex.test(normalized);
 }
 
